@@ -53,3 +53,8 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Watchdog projesi
+watchdog
+worker
+watchdog.log
