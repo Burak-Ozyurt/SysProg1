@@ -2,6 +2,7 @@
 #include "logger.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -122,6 +123,9 @@ int pm_start_worker(int worker_id)
     }
 
     if (pid == 0) {
+        sigset_t empty_mask;
+        sigemptyset(&empty_mask);
+        sigprocmask(SIG_SETMASK, &empty_mask, NULL);
         execv(w->exec_path, exec_argv);
         perror("execv");
         _exit(127);

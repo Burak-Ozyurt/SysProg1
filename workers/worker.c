@@ -17,10 +17,10 @@ static void print_usage(const char *prog)
     fprintf(stderr,
             "Kullanim: %s <worker_adi> [mod] [sure_sn]\n"
             "Modlar:\n"
-            "  steady       Sinyal gelene kadar surekli calisir (varsayilan)\n"
+            "  forever      Sinyal gelene kadar surekli calisir (varsayilan; steady)\n"
             "  normal       Belirtilen sure (varsayilan 3 sn) sonunda 0 ile cikar\n"
             "  error        Belirtilen sure (varsayilan 2 sn) sonunda 1 ile cikar\n"
-            "  ignore-term  SIGTERM'i yoksayar, SIGKILL gelene kadar calisir\n"
+            "  stubborn     SIGTERM'i yoksayar, SIGKILL gelene kadar calisir (ignore-term)\n"
             "  crash        Belirtilen sure (varsayilan 2 sn) sonunda SIGABRT uretir\n",
             prog);
 }
@@ -59,14 +59,14 @@ int main(int argc, char *argv[])
     }
 
     const char *name = argv[1];
-    const char *mode = (argc >= 3) ? argv[2] : "steady";
+    const char *mode = (argc >= 3) ? argv[2] : "forever";
     const char *dur_arg = (argc >= 4) ? argv[3] : NULL;
     pid_t pid = getpid();
 
     printf("[worker:%s pid=%d] basladi (mod=%s)\n", name, (int)pid, mode);
     fflush(stdout);
 
-    if (strcmp(mode, "steady") == 0) {
+    if (strcmp(mode, "forever") == 0 || strcmp(mode, "steady") == 0) {
         for (;;) {
             sleep(1);
         }
@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "[worker:%s pid=%d] hata koduyla cikis yapiyor\n",
                 name, (int)pid);
         return EXIT_FAILURE;
-    } else if (strcmp(mode, "ignore-term") == 0) {
+    } else if (strcmp(mode, "stubborn") == 0 || strcmp(mode, "ignore-term") == 0) {
         if (install_ignore_sigterm() == -1) {
             perror("sigaction");
             return EXIT_FAILURE;
