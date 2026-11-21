@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static WorkerProcess workers[PM_MAX_WORKERS];
@@ -34,6 +35,55 @@ static void reset_worker_slot(WorkerProcess *w, int id)
     w->last_exit_code = -1;
     w->last_term_signal = 0;
     w->restart_count = 0;
+}
+
+static WorkerProcess *find_worker_by_pid(pid_t pid)
+{
+    if (pid <= 0) {
+        return NULL;
+    }
+    for (size_t i = 0; i < worker_count; ++i) {
+        if (workers[i].pid == pid) {
+            return &workers[i];
+        }
+    }
+    return NULL;
+}
+
+static void record_worker_exit(WorkerProcess *w, int status)
+{
+    pid_t exited_pid = w->pid;
+    w->pid = -1;
+    w->last_exit_at = time(NULL);
+
+    if (WIFEXITED(status)) {
+        int code = WEXITSTATUS(status);
+        w->last_exit_code = code;
+        w->last_term_signal = 0;
+
+        if (code == 0) {
+            w->last_exit_reason = WORKER_EXIT_NORMAL;
+            w->state = shutting_down ? WORKER_STATE_TERMINATED : WORKER_STATE_COMPLETED;
+            log_event("EXIT %s pid=%d reason=NORMAL code=0", w->name, (int)exited_pid);
+        } else {
+            w->last_exit_reason = WORKER_EXIT_ERROR;
+            w->state = shutting_down ? WORKER_STATE_TERMINATED : WORKER_STATE_FAILED;
+            log_event("EXIT %s pid=%d reason=ERROR code=%d",
+                      w->name, (int)exited_pid, code);
+        }
+    } else if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        w->last_exit_reason = WORKER_EXIT_SIGNAL;
+        w->last_exit_code = -1;
+        w->last_term_signal = sig;
+        w->state = shutting_down ? WORKER_STATE_TERMINATED : WORKER_STATE_FAILED;
+        log_event("EXIT %s pid=%d reason=SIGNAL sig=%d",
+                  w->name, (int)exited_pid, sig);
+    } else {
+        w->last_exit_reason = WORKER_EXIT_NONE;
+        log_event("WARN %s pid=%d beklenmedik waitpid durumu=0x%x",
+                  w->name, (int)exited_pid, (unsigned int)status);
+    }
 }
 
 int pm_init(void)
@@ -156,6 +206,45 @@ int pm_start_all(void)
         }
     }
     return 0;
+}
+
+int pm_reap_children(void)
+{
+    if (!initialized) {
+        return -1;
+    }
+
+    int reaped = 0;
+
+    for (;;) {
+        int status = 0;
+        pid_t pid = waitpid(-1, &status, WNOHANG);
+
+        if (pid == 0) {
+            break;
+        }
+        if (pid < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == ECHILD) {
+                break;
+            }
+            log_event("ERROR waitpid basarisiz: %s", strerror(errno));
+            return -1;
+        }
+
+        reaped++;
+        WorkerProcess *w = find_worker_by_pid(pid);
+        if (w == NULL) {
+            log_event("WARN bilinmeyen alt surec toplandi pid=%d", (int)pid);
+            continue;
+        }
+
+        record_worker_exit(w, status);
+    }
+
+    return reaped;
 }
 
 void pm_set_shutting_down(bool flag)
