@@ -124,8 +124,11 @@ int pm_start_worker(int worker_id)
 
     if (pid == 0) {
         sigset_t empty_mask;
-        sigemptyset(&empty_mask);
-        sigprocmask(SIG_SETMASK, &empty_mask, NULL);
+        if (sigemptyset(&empty_mask) == -1 ||
+            sigprocmask(SIG_SETMASK, &empty_mask, NULL) == -1) {
+            perror("sigprocmask");
+            _exit(127);
+        }
         execv(w->exec_path, exec_argv);
         perror("execv");
         _exit(127);
