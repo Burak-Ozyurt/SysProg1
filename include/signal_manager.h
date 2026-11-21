@@ -12,4 +12,7 @@ extern volatile sig_atomic_t sm_timer_expired;
 /* Başlangıçtaki bildirim bayraklarını sıfırlar. */
 void sm_reset_events(void);
 
+/* Sinyal isleyicilerini kurar; basarida 0, hatada -1 dondurur. */
+int sm_install_handlers(void);
+
 #endif  

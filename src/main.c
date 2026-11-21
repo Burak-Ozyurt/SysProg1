@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "signal_manager.h"
 
@@ -6,7 +7,12 @@ int main(void)
 {
     sm_reset_events();
 
-    puts("Watchdog baslangic iskeleti hazir.");
+    if (sm_install_handlers() == -1) {
+        perror("Sinyal isleyicileri kurulamadi");
+        return EXIT_FAILURE;
+    }
 
-    return 0;
+    puts("Watchdog sinyal isleyicileri kuruldu.");
+
+    return EXIT_SUCCESS;
 }
