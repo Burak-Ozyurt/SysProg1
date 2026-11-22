@@ -100,6 +100,34 @@ static void record_worker_exit(WorkerProcess *w, int status)
     }
 }
 
+static void maybe_restart_worker(WorkerProcess *w)
+{
+    if (shutting_down) {
+        return;
+    }
+
+    if (w->last_exit_reason != WORKER_EXIT_ERROR &&
+        w->last_exit_reason != WORKER_EXIT_SIGNAL) {
+        return;
+    }
+
+    if (w->restart_count >= PM_MAX_RESTARTS) {
+        w->state = WORKER_STATE_FAILED;
+        log_event("GIVE_UP %s yeniden baslatma siniri asildi (%d/%d)",
+                  w->name, w->restart_count, PM_MAX_RESTARTS);
+        return;
+    }
+
+    w->restart_count++;
+    log_event("RESTART %s (%d/%d)", w->name, w->restart_count, PM_MAX_RESTARTS);
+
+    if (pm_start_worker(w->id) == -1) {
+        w->state = WORKER_STATE_FAILED;
+        log_event("ERROR %s yeniden baslatilamadi (%d/%d)",
+                  w->name, w->restart_count, PM_MAX_RESTARTS);
+    }
+}
+
 int pm_init(void)
 {
     for (size_t i = 0; i < PM_MAX_WORKERS; ++i) {
@@ -256,6 +284,7 @@ int pm_reap_children(void)
         }
 
         record_worker_exit(w, status);
+        maybe_restart_worker(w);
     }
 
     return reaped;
