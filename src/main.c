@@ -33,12 +33,15 @@ static void cleanup_after_error(void)
         if (pid > 0) {
             continue;
         }
+
         if (pid == -1 && errno == EINTR) {
             continue;
         }
+
         if (pid == -1 && errno != ECHILD) {
             perror("waitpid");
         }
+
         break;
     }
 }
@@ -97,11 +100,13 @@ int main(void)
     }
 
     const char *worker1[] = {
-        "./worker", "worker-1", "normal", "15", NULL
+        "./worker", "worker-1", "forever", NULL
     };
+
     const char *worker2[] = {
         "./worker", "worker-2", "normal", "3", NULL
     };
+
     const char *worker3[] = {
         "./worker", "worker-3", "crash", "2", NULL
     };
@@ -125,8 +130,16 @@ int main(void)
     while (pm_active_count() > 0) {
         if (sm_shutdown_requested) {
             sm_shutdown_requested = 0;
-            pm_set_shutting_down(true);
-            log_event("STOP_REQUEST workerlarin tamamlanmasi bekleniyor");
+
+            if (!pm_is_shutting_down()) {
+                pm_set_shutting_down(true);
+                log_event("SHUTDOWN basladi");
+
+                if (pm_terminate_all() == -1) {
+                    log_event("ERROR worker'lara SIGTERM gonderilemedi");
+                    goto cleanup;
+                }
+            }
         }
 
         if (sm_child_exited) {
@@ -156,13 +169,19 @@ int main(void)
         }
     }
 
-    log_event("WATCHDOG END tum workerlar toplandi");
+    if (pm_is_shutting_down()) {
+        log_event("SHUTDOWN tamamlandi: tum worker'lar toplandi");
+    } else {
+        log_event("WATCHDOG END tum worker'lar toplandi");
+    }
+
     result = EXIT_SUCCESS;
 
 cleanup:
     if (result != EXIT_SUCCESS) {
         cleanup_after_error();
     }
+
     pm_cleanup();
 
 close_log:
