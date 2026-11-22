@@ -15,21 +15,36 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
-# Watchdog'u temiz bir log dosyasiyla arka planda baslatir.
+# Watchdog'u temiz bir log dosyasiyla arka planda baslatir ve
+# "WATCHDOG START" satiri gorunene kadar (en fazla 3 sn) bekler.
 start_watchdog() {
     rm -f "$LOG"
     ./watchdog >/dev/null 2>&1 &
     WD_PID=$!
-    sleep 1
+    wait_for_log "WATCHDOG START" 3
 }
 
-# Watchdog hala calisiyorsa SIGTERM ile kapatir ve bitmesini bekler.
+# Watchdog'a SIGTERM gonderir ve en fazla 3 sn kapanmasini bekler.
+# Kapanmazsa SIGKILL ile durdurur; geride kalan worker'lari da temizler
+# ki bir test digerini etkilemesin.
 stop_watchdog() {
+    local i
     if [ -n "$WD_PID" ] && kill -0 "$WD_PID" 2>/dev/null; then
         kill -TERM "$WD_PID"
-        wait "$WD_PID" 2>/dev/null
+        for ((i = 0; i < 30; i++)); do
+            kill -0 "$WD_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -0 "$WD_PID" 2>/dev/null && kill -KILL "$WD_PID"
     fi
+    [ -n "$WD_PID" ] && wait "$WD_PID" 2>/dev/null
+    pkill -x worker 2>/dev/null
     WD_PID=""
+}
+
+# Logdaki son "START <ad> pid=N" satirindan worker'in PID'ini verir.
+worker_pid() {
+    sed -n "s/.*START $1 pid=\([0-9]*\).*/\1/p" "$LOG" | tail -n 1
 }
 
 # Log dosyasinda verilen ifade gecene kadar en fazla $2 saniye bekler.
@@ -121,18 +136,64 @@ test_worker_stubborn() {
     fi
 }
 
-# --- Watchdog senaryolari (ana dongu tamamlaninca etkinlesecek) ----------
+# --- Watchdog senaryolari ------------------------------------------------
 
 test_normal_operation() {
-    skip "Normal calisma: en az iki worker baslatilir (ana dongu bekleniyor)"
+    start_watchdog
+    local starts pid1 pid2
+    starts=$(grep -c "START worker-" "$LOG" 2>/dev/null)
+    pid1=$(worker_pid worker-1)
+    pid2=$(worker_pid worker-2)
+    if [ "${starts:-0}" -ge 2 ] && [ -n "$pid1" ] && [ -n "$pid2" ] &&
+       kill -0 "$pid1" 2>/dev/null && kill -0 "$pid2" 2>/dev/null; then
+        pass "Normal calisma: $starts worker baslatildi ve calisiyor"
+    else
+        fail "Normal calisma: en az iki calisan worker bulunamadi (START sayisi: ${starts:-0})"
+    fi
+    stop_watchdog
 }
 
 test_normal_exit() {
-    skip "Normal tamamlanma: exit(0) algilanir, yeniden baslatilmaz"
+    start_watchdog
+    if wait_for_log "EXIT worker-2 .*reason=NORMAL" 6; then
+        sleep 1
+        if grep -q "RESTART worker-2" "$LOG"; then
+            fail "Normal tamamlanma: worker-2 normal bitti ama yeniden baslatildi"
+        else
+            pass "Normal tamamlanma: worker-2 NORMAL olarak algilandi, yeniden baslatilmadi"
+        fi
+    else
+        fail "Normal tamamlanma: 'EXIT worker-2 ... reason=NORMAL' satiri bulunamadi"
+    fi
+    stop_watchdog
 }
 
 test_unexpected_exit() {
-    skip "Beklenmedik sonlanma: SIGKILL sonrasi yeniden baslatma"
+    start_watchdog
+    local pid comm
+
+    # 1) worker-3 kendiliginden SIGABRT ile coker.
+    if wait_for_log "EXIT worker-3 .*reason=SIGNAL sig=6" 5; then
+        pass "Beklenmedik sonlanma: worker-3 cokmesi (SIGABRT) algilandi"
+    else
+        fail "Beklenmedik sonlanma: worker-3 icin 'reason=SIGNAL sig=6' bulunamadi"
+    fi
+
+    # 2) worker-1'e disaridan SIGKILL gonderilir. PDF geregi once PID'in
+    #    gercekten bir test worker'ina ait oldugu dogrulanir.
+    pid=$(worker_pid worker-1)
+    comm=$(ps -p "${pid:-0}" -o comm= 2>/dev/null)
+    if [ -z "$pid" ] || [ "$comm" != "worker" ]; then
+        fail "Beklenmedik sonlanma: worker-1 PID'i dogrulanamadi"
+    else
+        kill -KILL "$pid"
+        if wait_for_log "EXIT worker-1 pid=$pid reason=SIGNAL sig=9" 3; then
+            pass "Beklenmedik sonlanma: worker-1'e gonderilen SIGKILL algilandi"
+        else
+            fail "Beklenmedik sonlanma: SIGKILL sonrasi 'reason=SIGNAL sig=9' bulunamadi"
+        fi
+    fi
+    stop_watchdog
 }
 
 test_restart_limit() {
