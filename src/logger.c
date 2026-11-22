@@ -1,4 +1,5 @@
 #include "logger.h"
+#include "process_manager.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -83,4 +84,38 @@ void log_close(void)
     if (close(log_fd) == -1)
         fprintf(stderr, "log_close: %s\n", strerror(errno));
     log_fd = -1;
+}
+
+void log_status_report(void)
+{
+    size_t count = 0;
+    size_t running = 0;
+    const WorkerProcess *workers = pm_get_workers(&count);
+
+    if (workers == NULL || count == 0) {
+        log_event("STATUS kayitli worker yok");
+        return;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (workers[i].state == WORKER_STATE_RUNNING)
+            running++;
+    }
+
+    log_event("STATUS rapor: toplam=%zu calisan=%zu", count, running);
+
+    for (size_t i = 0; i < count; i++) {
+        const WorkerProcess *w = &workers[i];
+
+        if (w->state == WORKER_STATE_RUNNING) {
+            log_event("STATUS %s pid=%d state=%s restarts=%d/%d",
+                      w->name, (int)w->pid, pm_state_to_string(w->state),
+                      w->restart_count, PM_MAX_RESTARTS);
+        } else {
+            log_event("STATUS %s pid=- state=%s restarts=%d/%d last_exit=%s",
+                      w->name, pm_state_to_string(w->state),
+                      w->restart_count, PM_MAX_RESTARTS,
+                      pm_exit_reason_to_string(w->last_exit_reason));
+        }
+    }
 }
