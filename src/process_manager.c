@@ -50,6 +50,20 @@ static WorkerProcess *find_worker_by_pid(pid_t pid)
     return NULL;
 }
 
+static int send_signal_to_worker(const WorkerProcess *w, int sig, const char *sig_name)
+{
+    if (kill(w->pid, sig) == 0) {
+        log_event("SIGNAL %s %s pid=%d", sig_name, w->name, (int)w->pid);
+        return 1;
+    }
+    if (errno == ESRCH) {
+        return 0;
+    }
+    log_event("ERROR %s gonderilemedi %s pid=%d: %s",
+              sig_name, w->name, (int)w->pid, strerror(errno));
+    return -1;
+}
+
 static void record_worker_exit(WorkerProcess *w, int status)
 {
     pid_t exited_pid = w->pid;
@@ -255,6 +269,90 @@ void pm_set_shutting_down(bool flag)
 bool pm_is_shutting_down(void)
 {
     return shutting_down;
+}
+
+int pm_terminate_all(void)
+{
+    if (!initialized) {
+        return -1;
+    }
+
+    shutting_down = true;
+
+    int sent = 0;
+    bool had_error = false;
+
+    for (size_t i = 0; i < worker_count; ++i) {
+        if (workers[i].state != WORKER_STATE_RUNNING || workers[i].pid <= 0) {
+            continue;
+        }
+        int rc = send_signal_to_worker(&workers[i], SIGTERM, "SIGTERM");
+        if (rc > 0) {
+            sent++;
+        } else if (rc < 0) {
+            had_error = true;
+        }
+    }
+
+    return had_error ? -1 : sent;
+}
+
+int pm_force_kill_remaining(void)
+{
+    if (!initialized) {
+        return -1;
+    }
+
+    shutting_down = true;
+
+    int killed = 0;
+    bool had_error = false;
+
+    if (pm_reap_children() == -1) {
+        had_error = true;
+    }
+
+    for (size_t i = 0; i < worker_count; ++i) {
+        WorkerProcess *w = &workers[i];
+        if (w->state != WORKER_STATE_RUNNING || w->pid <= 0) {
+            continue;
+        }
+
+        int rc = send_signal_to_worker(w, SIGKILL, "SIGKILL");
+        if (rc < 0) {
+            had_error = true;
+            continue;
+        }
+        if (rc == 0) {
+            continue;
+        }
+
+        killed++;
+
+        int status = 0;
+        pid_t waited;
+        do {
+            waited = waitpid(w->pid, &status, 0);
+        } while (waited == -1 && errno == EINTR);
+
+        if (waited == w->pid) {
+            record_worker_exit(w, status);
+        } else if (waited == -1 && errno == ECHILD) {
+            w->pid = -1;
+            w->state = WORKER_STATE_TERMINATED;
+            w->last_exit_at = time(NULL);
+        } else {
+            log_event("ERROR SIGKILL sonrasi waitpid basarisiz %s pid=%d: %s",
+                      w->name, (int)w->pid, strerror(errno));
+            had_error = true;
+        }
+    }
+
+    if (pm_reap_children() == -1) {
+        had_error = true;
+    }
+
+    return had_error ? -1 : killed;
 }
 
 int pm_active_count(void)
