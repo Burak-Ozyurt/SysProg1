@@ -24,14 +24,15 @@ start_watchdog() {
     wait_for_log "WATCHDOG START" 3
 }
 
-# Watchdog'a SIGTERM gonderir ve en fazla 3 sn kapanmasini bekler.
+# Watchdog'a SIGTERM gonderir ve en fazla 8 sn kapanmasini bekler
+# (SIGTERM'i yoksayan worker icin 5 sn'lik kapanis zaman asimi dahil).
 # Kapanmazsa SIGKILL ile durdurur; geride kalan worker'lari da temizler
 # ki bir test digerini etkilemesin.
 stop_watchdog() {
     local i
     if [ -n "$WD_PID" ] && kill -0 "$WD_PID" 2>/dev/null; then
         kill -TERM "$WD_PID"
-        for ((i = 0; i < 30; i++)); do
+        for ((i = 0; i < 80; i++)); do
             kill -0 "$WD_PID" 2>/dev/null || break
             sleep 0.1
         done
@@ -244,12 +245,52 @@ test_status_report() {
     stop_watchdog
 }
 
+# Watchdog'a verilen sinyali gonderir ve kontrollu kapanisi dogrular:
+# worker'lara SIGTERM gonderilmeli, worker'lar toplanmali, watchdog
+# 0 koduyla cikmali ve geride calisan worker kalmamali.
+check_shutdown() {
+    local sig=$1 label=$2 pid1 rc i
+
+    start_watchdog
+    pid1=$(worker_pid worker-1)
+    kill -"$sig" "$WD_PID"
+
+    # Kapanis zaman asimi (5 sn) dahil en fazla 10 sn bekle.
+    for ((i = 0; i < 100; i++)); do
+        kill -0 "$WD_PID" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$WD_PID" 2>/dev/null; then
+        fail "$label: watchdog 10 sn icinde kapanmadi"
+        stop_watchdog
+        return
+    fi
+    wait "$WD_PID" 2>/dev/null
+    rc=$?
+    WD_PID=""
+
+    if [ "$rc" -eq 0 ] &&
+       grep -q "SHUTDOWN basladi" "$LOG" &&
+       grep -q "SIGNAL SIGTERM worker-1 pid=$pid1" "$LOG" &&
+       grep -q "EXIT worker-1 pid=$pid1 reason=SIGNAL" "$LOG" &&
+       grep -q "SHUTDOWN tamamlandi" "$LOG" &&
+       ! kill -0 "$pid1" 2>/dev/null; then
+        pass "$label: worker'lara SIGTERM gonderildi, toplandi, watchdog 0 ile cikti"
+    else
+        fail "$label: kapanis adimlarindan biri eksik (cikis kodu: $rc)"
+    fi
+    pkill -x worker 2>/dev/null
+}
+
 test_sigterm_shutdown() {
-    skip "Kontrollu kapanis: SIGTERM ile worker'lar sonlandirilip toplanir"
+    check_shutdown TERM "Kontrollu kapanis (SIGTERM)"
 }
 
 test_sigint_shutdown() {
-    skip "Ctrl+C (SIGINT) ile kontrollu kapanis"
+    # Terminaldeki Ctrl+C, watchdog'a SIGINT gonderir. Burada ayni sinyal
+    # dogrudan watchdog'a gonderilir; terminalde elle yapilan Ctrl+C
+    # testi docs/TEST_RESULTS.md dosyasinda ayrica belgelenir.
+    check_shutdown INT "Kontrollu kapanis (SIGINT / Ctrl+C)"
 }
 
 test_shutdown_timeout() {
