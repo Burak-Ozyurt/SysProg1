@@ -2,7 +2,9 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/select.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "logger.h"
@@ -46,12 +48,43 @@ static void cleanup_after_error(void)
     }
 }
 
+/* Kalan sure varsa 1, sure dolduysa 0, hatada -1 dondurur. */
+static int shutdown_time_remaining(
+    const struct timespec *deadline,
+    struct timespec *remaining)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
+        return -1;
+    }
+
+    if (now.tv_sec > deadline->tv_sec ||
+        (now.tv_sec == deadline->tv_sec &&
+         now.tv_nsec >= deadline->tv_nsec)) {
+        remaining->tv_sec = 0;
+        remaining->tv_nsec = 0;
+        return 0;
+    }
+
+    remaining->tv_sec = deadline->tv_sec - now.tv_sec;
+    remaining->tv_nsec = deadline->tv_nsec - now.tv_nsec;
+
+    if (remaining->tv_nsec < 0) {
+        remaining->tv_sec--;
+        remaining->tv_nsec += 1000000000L;
+    }
+
+    return 1;
+}
+
 int main(void)
 {
     int result = EXIT_FAILURE;
     sigset_t blocked_mask;
     sigset_t old_mask;
     sigset_t wait_mask;
+    struct timespec shutdown_deadline = {0};
 
     const int signals[] = {
         SIGINT, SIGTERM, SIGUSR1, SIGCHLD, SIGALRM
@@ -111,9 +144,14 @@ int main(void)
         "./worker", "worker-3", "crash", "2", NULL
     };
 
+    const char *worker4[] = {
+        "./worker", "worker-4", "stubborn", NULL
+    };
+
     if (pm_add_worker("worker-1", "./worker", worker1) == -1 ||
         pm_add_worker("worker-2", "./worker", worker2) == -1 ||
-        pm_add_worker("worker-3", "./worker", worker3) == -1) {
+        pm_add_worker("worker-3", "./worker", worker3) == -1 ||
+        pm_add_worker("worker-4", "./worker", worker4) == -1) {
         log_event("ERROR worker tanimlari eklenemedi");
         goto cleanup;
     }
@@ -133,7 +171,17 @@ int main(void)
 
             if (!pm_is_shutting_down()) {
                 pm_set_shutting_down(true);
-                log_event("SHUTDOWN basladi");
+
+                if (clock_gettime(
+                        CLOCK_MONOTONIC, &shutdown_deadline) == -1) {
+                    perror("clock_gettime");
+                    goto cleanup;
+                }
+
+                shutdown_deadline.tv_sec += PM_SHUTDOWN_TIMEOUT_SEC;
+
+                log_event("SHUTDOWN basladi: zaman asimi=%d saniye",
+                          PM_SHUTDOWN_TIMEOUT_SEC);
 
                 if (pm_terminate_all() == -1) {
                     log_event("ERROR worker'lara SIGTERM gonderilemedi");
@@ -163,9 +211,51 @@ int main(void)
             break;
         }
 
-        if (sigsuspend(&wait_mask) == -1 && errno != EINTR) {
-            perror("sigsuspend");
-            goto cleanup;
+        if (pm_is_shutting_down()) {
+            struct timespec remaining;
+            int time_left = shutdown_time_remaining(
+                &shutdown_deadline, &remaining);
+
+            if (time_left == -1) {
+                perror("clock_gettime");
+                goto cleanup;
+            }
+
+            if (time_left == 0) {
+                if (pm_reap_children() == -1) {
+                    goto cleanup;
+                }
+
+                if (pm_active_count() > 0) {
+                    log_event(
+                        "SHUTDOWN TIMEOUT: kalan %d worker'a SIGKILL",
+                        pm_active_count());
+
+                    if (pm_force_kill_remaining() == -1) {
+                        log_event("ERROR zorla sonlandirma basarisiz");
+                        goto cleanup;
+                    }
+
+                    if (pm_active_count() > 0) {
+                        log_event("ERROR toplanamayan worker var");
+                        goto cleanup;
+                    }
+                }
+
+                break;
+            }
+
+            if (pselect(0, NULL, NULL, NULL,
+                        &remaining, &wait_mask) == -1 &&
+                errno != EINTR) {
+                perror("pselect");
+                goto cleanup;
+            }
+        } else {
+            if (sigsuspend(&wait_mask) == -1 && errno != EINTR) {
+                perror("sigsuspend");
+                goto cleanup;
+            }
         }
     }
 
