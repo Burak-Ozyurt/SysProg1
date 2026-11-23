@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -399,6 +400,75 @@ int pm_active_count(void)
     return active;
 }
 
+int pm_start_periodic_timer(unsigned int interval_sec)
+{
+    if (!initialized) {
+        return -1;
+    }
+
+    unsigned int interval =
+        (interval_sec == 0) ? PM_DEFAULT_CHECK_INTERVAL_SEC : interval_sec;
+
+    struct itimerval timer;
+    memset(&timer, 0, sizeof(timer));
+    timer.it_interval.tv_sec = (time_t)interval;
+    timer.it_value.tv_sec = (time_t)interval;
+
+    if (setitimer(ITIMER_REAL, &timer, NULL) == -1) {
+        log_event("ERROR setitimer baslatilamadi: %s", strerror(errno));
+        return -1;
+    }
+
+    log_event("TIMER baslatildi aralik=%u sn", interval);
+    return 0;
+}
+
+void pm_stop_periodic_timer(void)
+{
+    struct itimerval zero_timer;
+    memset(&zero_timer, 0, sizeof(zero_timer));
+
+    if (setitimer(ITIMER_REAL, &zero_timer, NULL) == -1) {
+        log_event("ERROR setitimer durdurulamadi: %s", strerror(errno));
+    }
+}
+
+int pm_periodic_check(void)
+{
+    if (!initialized) {
+        return -1;
+    }
+
+    if (pm_reap_children() == -1) {
+        return -1;
+    }
+
+    int alive = 0;
+    for (size_t i = 0; i < worker_count; ++i) {
+        WorkerProcess *w = &workers[i];
+        if (w->state != WORKER_STATE_RUNNING || w->pid <= 0) {
+            continue;
+        }
+
+        if (kill(w->pid, 0) == 0) {
+            alive++;
+        } else if (errno == ESRCH) {
+            log_event("WARN periyodik kontrol: %s pid=%d bulunamadi",
+                      w->name, (int)w->pid);
+            w->pid = -1;
+            w->state = shutting_down ? WORKER_STATE_TERMINATED : WORKER_STATE_FAILED;
+            w->last_exit_at = time(NULL);
+        } else {
+            log_event("ERROR periyodik kontrol kill(0) %s pid=%d: %s",
+                      w->name, (int)w->pid, strerror(errno));
+            return -1;
+        }
+    }
+
+    log_event("PERIODIC_CHECK aktif=%d toplam=%zu", alive, worker_count);
+    return alive;
+}
+
 const WorkerProcess *pm_get_workers(size_t *count)
 {
     if (count != NULL) {
@@ -443,6 +513,7 @@ const char *pm_exit_reason_to_string(WorkerExitReason reason)
 
 void pm_cleanup(void)
 {
+    pm_stop_periodic_timer();
     for (size_t i = 0; i < PM_MAX_WORKERS; ++i) {
         reset_worker_slot(&workers[i], (int)i);
     }
