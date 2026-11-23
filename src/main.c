@@ -161,6 +161,11 @@ int main(void)
         goto cleanup;
     }
 
+    if (pm_start_periodic_timer(0) == -1) {
+        log_event("ERROR periyodik zamanlayici baslatilamadi");
+        goto cleanup;
+    }
+
     log_event("WATCHDOG START pid=%d", (int)getpid());
     printf("Watchdog PID: %d\n", (int)getpid());
     fflush(stdout);
@@ -171,6 +176,7 @@ int main(void)
 
             if (!pm_is_shutting_down()) {
                 pm_set_shutting_down(true);
+                pm_stop_periodic_timer();
 
                 if (clock_gettime(
                         CLOCK_MONOTONIC, &shutdown_deadline) == -1) {
@@ -205,6 +211,13 @@ int main(void)
 
         if (sm_timer_expired) {
             sm_timer_expired = 0;
+
+            if (!pm_is_shutting_down()) {
+                if (pm_periodic_check() == -1) {
+                    log_event("ERROR periyodik kontrol basarisiz");
+                    goto cleanup;
+                }
+            }
         }
 
         if (pm_active_count() == 0) {
@@ -268,6 +281,8 @@ int main(void)
     result = EXIT_SUCCESS;
 
 cleanup:
+    pm_stop_periodic_timer();
+
     if (result != EXIT_SUCCESS) {
         cleanup_after_error();
     }
