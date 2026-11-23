@@ -141,7 +141,7 @@ test_worker_stubborn() {
 test_normal_operation() {
     start_watchdog
     local starts pid1 pid2
-    starts=$(grep -c "START worker-" "$LOG" 2>/dev/null)
+    starts=$(grep -c "\] START worker-" "$LOG" 2>/dev/null)
     pid1=$(worker_pid worker-1)
     pid2=$(worker_pid worker-2)
     if [ "${starts:-0}" -ge 2 ] && [ -n "$pid1" ] && [ -n "$pid2" ] &&
@@ -192,16 +192,56 @@ test_unexpected_exit() {
         else
             fail "Beklenmedik sonlanma: SIGKILL sonrasi 'reason=SIGNAL sig=9' bulunamadi"
         fi
+        if wait_for_log "RESTART worker-1 (1/3)" 3; then
+            pass "Beklenmedik sonlanma: worker-1 yeniden baslatildi (1/3)"
+        else
+            fail "Beklenmedik sonlanma: worker-1 icin 'RESTART worker-1 (1/3)' bulunamadi"
+        fi
     fi
     stop_watchdog
 }
 
 test_restart_limit() {
-    skip "Yeniden baslatma siniri: 3 denemeden sonra durur"
+    start_watchdog
+    local starts
+
+    # worker-3 her 2 sn'de coker: 1 ilk baslatma + 3 yeniden baslatma,
+    # ardindan GIVE_UP. Toplam yaklasik 8 sn surer.
+    if ! wait_for_log "GIVE_UP worker-3" 12; then
+        fail "Yeniden baslatma siniri: 'GIVE_UP worker-3' satiri bulunamadi"
+        stop_watchdog
+        return
+    fi
+
+    # GIVE_UP'tan sonra yeni bir deneme yapilmadigini gormek icin biraz bekle.
+    sleep 3
+    starts=$(grep -c "\] START worker-3 " "$LOG")
+
+    if grep -q "RESTART worker-3 (1/3)" "$LOG" &&
+       grep -q "RESTART worker-3 (2/3)" "$LOG" &&
+       grep -q "RESTART worker-3 (3/3)" "$LOG" &&
+       ! grep -q "RESTART worker-3 (4/3)" "$LOG" &&
+       [ "$starts" -eq 4 ]; then
+        pass "Yeniden baslatma siniri: 3 yeniden baslatmadan sonra durdu (toplam $starts baslatma)"
+    else
+        fail "Yeniden baslatma siniri: beklenen 3 RESTART ve 4 START, gelen START sayisi: $starts"
+    fi
+    stop_watchdog
 }
 
 test_status_report() {
-    skip "Durum raporu: SIGUSR1 sonrasi PID ve durumlar loga yazilir"
+    start_watchdog
+    local pid1
+    pid1=$(worker_pid worker-1)
+
+    kill -USR1 "$WD_PID"
+    if wait_for_log "STATUS rapor:" 3 &&
+       grep -q "STATUS worker-1 pid=$pid1 state=RUNNING" "$LOG"; then
+        pass "Durum raporu: SIGUSR1 sonrasi worker PID ve durumlari loga yazildi"
+    else
+        fail "Durum raporu: SIGUSR1 sonrasi 'STATUS worker-1 pid=$pid1 state=RUNNING' bulunamadi"
+    fi
+    stop_watchdog
 }
 
 test_sigterm_shutdown() {
