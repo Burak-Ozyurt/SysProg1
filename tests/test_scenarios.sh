@@ -294,11 +294,75 @@ test_sigint_shutdown() {
 }
 
 test_shutdown_timeout() {
-    skip "Kapanis zaman asimi: SIGTERM'e yanit vermeyen worker'a SIGKILL"
+    local pid4 comm start elapsed i
+
+    start_watchdog
+    pid4=$(worker_pid worker-4)
+    comm=$(ps -p "${pid4:-0}" -o comm= 2>/dev/null)
+    if [ -z "$pid4" ] || [ "$comm" != "worker" ]; then
+        fail "Kapanis zaman asimi: stubborn worker (worker-4) bulunamadi"
+        stop_watchdog
+        return
+    fi
+
+    start=$SECONDS
+    kill -TERM "$WD_PID"
+    for ((i = 0; i < 100; i++)); do
+        kill -0 "$WD_PID" 2>/dev/null || break
+        sleep 0.1
+    done
+    elapsed=$((SECONDS - start))
+    if kill -0 "$WD_PID" 2>/dev/null; then
+        fail "Kapanis zaman asimi: watchdog 10 sn icinde kapanmadi"
+        stop_watchdog
+        return
+    fi
+    wait "$WD_PID" 2>/dev/null
+    WD_PID=""
+
+    # worker-4 SIGTERM'i yoksaydigi icin kapanis yaklasik 5 sn surmeli
+    # ve sonunda SIGKILL ile sonlandirilmali.
+    if grep -q "SHUTDOWN TIMEOUT" "$LOG" &&
+       grep -q "SIGNAL SIGKILL worker-4 pid=$pid4" "$LOG" &&
+       grep -q "EXIT worker-4 pid=$pid4 reason=SIGNAL sig=9" "$LOG" &&
+       grep -q "SHUTDOWN tamamlandi" "$LOG" &&
+       [ "$elapsed" -ge 4 ] && [ "$elapsed" -le 8 ] &&
+       ! kill -0 "$pid4" 2>/dev/null; then
+        pass "Kapanis zaman asimi: worker-4 ${elapsed} sn sonra SIGKILL ile sonlandirildi"
+    else
+        fail "Kapanis zaman asimi: SIGKILL adimi eksik veya sure beklenmedik (${elapsed} sn)"
+    fi
+    pkill -x worker 2>/dev/null
+}
+
+# Watchdog'un cocuklari arasinda zombie (Z durumunda) surec sayisini verir.
+zombie_children() {
+    ps -o stat= --ppid "$1" 2>/dev/null | grep -c '^Z'
 }
 
 test_no_zombies() {
-    skip "Zombie kontrolu: kapanis sonrasi defunct surec kalmaz"
+    local z i
+
+    # worker-2 normal biter, worker-3 coker ve yeniden baslatilir;
+    # bu sonlanmalarin hepsi waitpid ile toplanmis olmali.
+    start_watchdog
+    wait_for_log "EXIT worker-2" 6
+
+    # Bir surec oldugu an ile SIGCHLD isleme arasinda kisa sureli zombie
+    # gorunebilir; bu yuzden birkac kez bakilir.
+    for ((i = 0; i < 5; i++)); do
+        z=$(zombie_children "$WD_PID")
+        [ "$z" -eq 0 ] && break
+        sleep 0.2
+    done
+    stop_watchdog
+
+    if [ "$z" -eq 0 ] &&
+       [ "$(ps -eo stat=,comm= | awk '$1 ~ /^Z/ && $2 == "worker"' | wc -l)" -eq 0 ]; then
+        pass "Zombie kontrolu: calisma sirasinda ve kapanis sonrasi zombie surec yok"
+    else
+        fail "Zombie kontrolu: toplanmamis (defunct) worker bulundu"
+    fi
 }
 
 # --- Calistir -----------------------------------------------------------
