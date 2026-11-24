@@ -131,6 +131,9 @@ static void maybe_restart_worker(WorkerProcess *w)
 
 int pm_init(void)
 {
+    if (initialized) {
+        pm_cleanup();
+    }
     for (size_t i = 0; i < PM_MAX_WORKERS; ++i) {
         reset_worker_slot(&workers[i], (int)i);
     }
@@ -202,6 +205,16 @@ int pm_start_worker(int worker_id)
     if (w->state == WORKER_STATE_RUNNING && w->pid > 0) {
         return -1;
     }
+    if (w->argc <= 0 || w->argc > PM_MAX_ARGS) {
+        log_event("ERROR gecersiz arguman sayisi (%s): argc=%d",
+                  w->name, w->argc);
+        return -1;
+    }
+    if (access(w->exec_path, X_OK) == -1) {
+        log_event("ERROR %s calistirilamiyor (%s): %s",
+                  w->name, w->exec_path, strerror(errno));
+        return -1;
+    }
 
     char *exec_argv[PM_MAX_ARGS + 1];
     for (int i = 0; i < w->argc && i < PM_MAX_ARGS; ++i) {
@@ -219,11 +232,17 @@ int pm_start_worker(int worker_id)
         sigset_t empty_mask;
         if (sigemptyset(&empty_mask) == -1 ||
             sigprocmask(SIG_SETMASK, &empty_mask, NULL) == -1) {
-            perror("sigprocmask");
+            const char msg[] = "worker: sigprocmask basarisiz\n";
+            if (write(STDERR_FILENO, msg, sizeof(msg) - 1) == -1) {
+                /* cikis oncesi en iyi caba mesaji */
+            }
             _exit(127);
         }
         execv(w->exec_path, exec_argv);
-        perror("execv");
+        const char msg[] = "worker: execv basarisiz\n";
+        if (write(STDERR_FILENO, msg, sizeof(msg) - 1) == -1) {
+            /* cikis oncesi en iyi caba mesaji */
+        }
         _exit(127);
     }
 
@@ -244,6 +263,9 @@ int pm_start_all(void)
     for (size_t i = 0; i < worker_count; ++i) {
         if (workers[i].state == WORKER_STATE_NOT_STARTED) {
             if (pm_start_worker((int)i) == -1) {
+                if (pm_active_count() > 0) {
+                    pm_force_kill_remaining();
+                }
                 return -1;
             }
         }
@@ -514,6 +536,20 @@ const char *pm_exit_reason_to_string(WorkerExitReason reason)
 void pm_cleanup(void)
 {
     pm_stop_periodic_timer();
+
+    if (initialized) {
+        if (pm_active_count() > 0) {
+            pm_force_kill_remaining();
+        }
+        for (;;) {
+            pid_t pid = waitpid(-1, NULL, WNOHANG);
+            if (pid > 0 || (pid == -1 && errno == EINTR)) {
+                continue;
+            }
+            break;
+        }
+    }
+
     for (size_t i = 0; i < PM_MAX_WORKERS; ++i) {
         reset_worker_slot(&workers[i], (int)i);
     }
