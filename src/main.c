@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/select.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -14,37 +13,10 @@
 /* Baslatma veya ana dongu hatasinda geride worker birakmaz. */
 static void cleanup_after_error(void)
 {
-    size_t count = 0;
-    const WorkerProcess *workers = pm_get_workers(&count);
-
     pm_set_shutting_down(true);
 
-    for (size_t i = 0; i < count; ++i) {
-        if (workers[i].state == WORKER_STATE_RUNNING &&
-            workers[i].pid > 0) {
-            if (kill(workers[i].pid, SIGKILL) == -1 &&
-                errno != ESRCH) {
-                perror("Worker temizlenemedi");
-            }
-        }
-    }
-
-    for (;;) {
-        pid_t pid = waitpid(-1, NULL, 0);
-
-        if (pid > 0) {
-            continue;
-        }
-
-        if (pid == -1 && errno == EINTR) {
-            continue;
-        }
-
-        if (pid == -1 && errno != ECHILD) {
-            perror("waitpid");
-        }
-
-        break;
+    if (pm_force_kill_remaining() == -1) {
+        log_event("ERROR hata sonrasi worker temizligi basarisiz");
     }
 }
 
