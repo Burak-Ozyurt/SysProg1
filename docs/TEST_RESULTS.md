@@ -136,7 +136,7 @@ Log kanıtları `docs/sample.log` dosyasından alınmıştır.
 [2026-11-24 15:34:17] STATUS worker-4 pid=1747 state=RUNNING restarts=0/3
 ```
 
-### 6. Kontrollü kapanış (SIGTERM)
+### 6a. Kontrollü kapanış (SIGTERM)
 
 | | |
 |---|---|
@@ -155,7 +155,7 @@ Log kanıtları `docs/sample.log` dosyasından alınmıştır.
 [2026-11-24 15:34:23] SHUTDOWN tamamlandi: tum worker'lar toplandi
 ```
 
-### 7. Kontrollü kapanış (Ctrl+C) — elle yapılan test
+### 6b. Kontrollü kapanış (Ctrl+C) — elle yapılan test
 
 | | |
 |---|---|
@@ -172,9 +172,9 @@ Log kanıtları `docs/sample.log` dosyasından alınmıştır.
 [2026-11-24 15:34:53] SHUTDOWN tamamlandi: tum worker'lar toplandi
 ```
 
-**Not:** Terminalde Ctrl+C, `SIGINT`'i yalnızca watchdog'a değil, aynı ön plan süreç grubundaki worker'lara da gönderir. Bu yüzden worker'lar watchdog'un gönderdiği `SIGTERM`'den önce doğrudan terminalden gelen `SIGINT` ile (`sig=2`) sonlandı. Watchdog yine de kapanış akışını eksiksiz uyguladı: kapanış modunda bu sonlanmaları yeniden başlatmadı, tüm worker'ları toplayıp 0 koduyla çıktı. `SIGTERM` gönderme ve zaman aşımı adımları, sinyalin yalnızca watchdog'a gönderildiği 6. senaryoda ve otomatik SIGINT testinde ayrıca doğrulanmıştır.
+**Not:** Terminalde Ctrl+C, `SIGINT`'i yalnızca watchdog'a değil, aynı ön plan süreç grubundaki worker'lara da gönderir. Bu yüzden worker'lar watchdog'un gönderdiği `SIGTERM`'den önce doğrudan terminalden gelen `SIGINT` ile (`sig=2`) sonlandı. Watchdog yine de kapanış akışını eksiksiz uyguladı: kapanış modunda bu sonlanmaları yeniden başlatmadı, tüm worker'ları toplayıp 0 koduyla çıktı. `SIGTERM` gönderme ve zaman aşımı adımları, sinyalin yalnızca watchdog'a gönderildiği 6a senaryosunda ve otomatik SIGINT testinde ayrıca doğrulanmıştır.
 
-### 8. Log doğrulama
+### 7. Log doğrulama
 
 | | |
 |---|---|
